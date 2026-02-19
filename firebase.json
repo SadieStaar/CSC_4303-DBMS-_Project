@@ -1,0 +1,17 @@
+{
+  "hosting": {
+    "site": "airline-frontend",
+    "public": "/Users/journeyharris/Desktop/Desktop - Journey’s MacBook Pro (2)/CompSci/400 Series/CSC 405/Capstone/CSC_4303-DBMS-_Project/",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
