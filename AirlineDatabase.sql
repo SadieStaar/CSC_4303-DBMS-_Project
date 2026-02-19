@@ -2,6 +2,7 @@ CREATE DATABASE airline;
 USE airline;
 
 -- Person Table
+DROP TABLE IF EXISTS person;
 CREATE TABLE person (
     ssn VARCHAR(11) NOT NULL,
     dob DATE NOT NULL,
@@ -12,6 +13,7 @@ CREATE TABLE person (
 );
 
 -- Passenger Table
+DROP TABLE IF EXISTS passenger;
 CREATE TABLE passenger (
     ssn VARCHAR(11) NOT NULL,
     passport_num VARCHAR(30) NOT NULL,
@@ -22,6 +24,7 @@ CREATE TABLE passenger (
 );
 
 -- Employee Table
+DROP TABLE IF EXISTS employee;
 CREATE TABLE employee (
     employee_id VARCHAR(20) NOT NULL,
     ssn VARCHAR(11) NOT NULL,
@@ -39,6 +42,7 @@ CREATE TABLE administrator (
 );
 
 -- Flight crew table
+DROP TABLE IF EXISTS flight_crew;
 CREATE TABLE flight_crew (
     employee_id VARCHAR(20) NOT NULL,
     admin_id VARCHAR(20),
@@ -48,6 +52,7 @@ CREATE TABLE flight_crew (
 );
 
 -- Pilot Table
+DROP TABLE IF EXISTS pilot;
 CREATE TABLE pilot (
     employee_id VARCHAR(20) NOT NULL,
     license_num VARCHAR(20) NOT NULL,
@@ -56,6 +61,7 @@ CREATE TABLE pilot (
 );
 
 -- Plane host table 
+DROP TABLE IF EXISTS plane_host;
 CREATE TABLE plane_host (
     employee_id VARCHAR(20) NOT NULL,
     PRIMARY KEY (employee_id),
@@ -63,6 +69,7 @@ CREATE TABLE plane_host (
 );
 
 -- Aircraft table
+DROP TABLE IF EXISTS aircraft;
 CREATE TABLE aircraft (
     tail_number VARCHAR(20) NOT NULL,
     id VARCHAR(20) NOT NULL,
@@ -73,6 +80,7 @@ CREATE TABLE aircraft (
 );
 
 -- Flight table
+DROP TABLE IF EXISTS flight;
 CREATE TABLE flight (
     flight_num VARCHAR(20) NOT NULL,
     depart_time TIMESTAMP NOT NULL,
@@ -88,6 +96,7 @@ CREATE TABLE flight (
 );
 
 -- Ticket table 
+DROP TABLE IF EXISTS ticket;
 CREATE TABLE ticket (
     ticket_num VARCHAR(20) NOT NULL,
     price DECIMAL(10, 2) NOT NULL,
@@ -103,6 +112,7 @@ CREATE TABLE ticket (
 );
 
 -- Pilot of table (M:N)
+DROP TABLE IF EXISTS pilot_of;
 CREATE TABLE pilot_of (
     pilot_id VARCHAR(20) NOT NULL,
     flight_num VARCHAR(20) NOT NULL,
@@ -112,6 +122,7 @@ CREATE TABLE pilot_of (
 );
 
 -- Staff of table (M:N)
+DROP TABLE IF EXISTS staff_of;
 CREATE TABLE staff_of (
     plane_host_id VARCHAR(20) NOT NULL,
     flight_num VARCHAR(20) NOT NULL,
@@ -121,6 +132,7 @@ CREATE TABLE staff_of (
 );
 
 -- Incident table
+DROP TABLE IF EXISTS incident;
 CREATE TABLE incident (
     incident_num VARCHAR(20) NOT NULL,
     time_occurred TIMESTAMP NOT NULL,
@@ -129,3 +141,31 @@ CREATE TABLE incident (
     PRIMARY KEY (incident_num),
     FOREIGN KEY (tail_number) REFERENCES aircraft(tail_number)
 );
+
+ALTER TABLE passenger
+	ADD CONSTRAINT passenger_passport UNIQUE (passport_num),
+    ADD CONSTRAINT passenger_email UNIQUE (email),
+    ADD CONSTRAINT check_passenger_email CHECK (email IS NULL OR email LIKE '@');
+    
+ALTER TABLE employee
+	ADD CONSTRAINT employee_salary CHECK (salary >= 0);
+    
+ALTER TABLE aircraft
+	ADD CONSTRAINT aircraft_id UNIQUE (id),
+    ADD CONSTRAINT aircraft_capacity CHECK (capacity > 0),
+    ADD CONSTRAINT aircraft_status CHECK (status IN ('ACTIVE', 'MAINTENCE', 'RETIRED'));
+    
+ALTER TABLE flight
+  ADD CONSTRAINT chk_flight_time CHECK (arrival_time > depart_time),
+  ADD CONSTRAINT chk_flight_route CHECK (origin <> destination),
+  ADD CONSTRAINT chk_flight_status CHECK (status IN ('SCHEDULED','BOARDING','DELAYED','IN_AIR','LANDED','CANCELLED'));
+
+ALTER TABLE ticket
+  ADD CONSTRAINT chk_ticket_price CHECK (price >= 0),
+  ADD CONSTRAINT chk_ticket_date CHECK (date_booked <= CURDATE()),
+  ADD CONSTRAINT chk_ticket_status CHECK (status IN ('CONFIRMED','CANCELLED','REFUNDED','CHANGED')),
+  ADD CONSTRAINT chk_ticket_class CHECK (class IN ('ECONOMY','BUSINESS','FIRST')),
+  ADD CONSTRAINT uq_ticket_seat_per_flight UNIQUE (flight_num, seat_num);
+
+ALTER TABLE incident
+  ADD CONSTRAINT chk_incident_time CHECK (time_occured <= NOW());
