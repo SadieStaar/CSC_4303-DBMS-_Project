@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Airline DB Frontend</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Top header with title, role display, and logout -->
+  <header class="topbar">
+    <div>
+      <h1>Airline Database Frontend</h1>
+      <p class="muted">Plain HTML + vanilla JS</p>
+    </div>
+    <div class="topbar-right">
+      <span id="current-role">Role: guest</span>
+      <button id="logout-btn" type="button">Logout</button>
+    </div>
+  </header>
+
+  <!-- Role-based route navigation -->
+  <nav class="route-nav">
+    <a href="#/login">Login</a>
+    <a href="#/passenger">Passenger</a>
+    <a href="#/agent">Agent</a>
+    <a href="#/crew">Crew</a>
+    <a href="#/admin">Admin</a>
+  </nav>
+
+  <!-- Global status and main page mount point -->
+  <div id="status" class="status" aria-live="polite"></div>
+
+  <main id="app" class="page"></main>
+
+  <!-- Reusable debug panel template injected by JS -->
+  <template id="debug-panel-template">
+    <section class="card debug-panel">
+      <h3>Debug</h3>
+      <p><strong>Last request URL:</strong> <code data-debug-url>-</code></p>
+      <p><strong>Last error:</strong> <code data-debug-error>-</code></p>
+    </section>
+  </template>
+
+  <!-- App logic and basic local-file warning -->
+  <script src="app.js"></script>
+  <script>
+    if (location.protocol === "file:") {
+      const statusEl = document.getElementById("status");
+      statusEl.textContent = "Run from a local server (not file://).";
+      statusEl.className = "status error";
+    }
+  </script>
+</body>
+</html>
