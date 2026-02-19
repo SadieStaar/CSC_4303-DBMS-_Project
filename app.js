@@ -45,6 +45,21 @@ const AUTH_KEYS = {
   email: "airline_email"
 };
 
+const AIRPORT_CODES = ["ATL", "DFW", "DEN", "ORD", "LAX", "JFK", "SEA", "MIA", "IAH", "PHX"];
+const CABIN_CLASSES = ["ECONOMY", "BUSINESS", "FIRST"];
+const FLIGHT_STATUSES = ["SCHEDULED", "BOARDING", "DELAYED", "IN_AIR", "LANDED", "CANCELLED"];
+const SEAT_SUGGESTIONS = buildSeatSuggestions();
+const GATE_OPTIONS = Array.from({ length: 40 }, (_unused, i) => `G${String(i + 1).padStart(2, "0")}`);
+const TERMINAL_OPTIONS = Array.from({ length: 8 }, (_unused, i) => String(i + 1).padStart(2, "0"));
+const INCIDENT_DESCRIPTIONS = [
+  "Minor maintenance issue reported.",
+  "Late baggage load caused departure delay.",
+  "Cabin cleaning needed before boarding.",
+  "Mechanical check requested by crew.",
+  "Gate change due to congestion."
+];
+const PASSENGER_QUERY_FALLBACK = buildPassengerQueryFallback();
+
 // Values shown in the debug panel.
 const debugState = {
   lastUrl: "-",
@@ -54,8 +69,10 @@ const debugState = {
 // In-memory UI data by feature/role.
 const state = {
   passengerResults: [],
+  passengerFlightCatalog: [],
   passengerTickets: [],
   agentPassengers: [],
+  agentRecentTickets: [],
   crewSchedule: [],
   adminFlights: [],
   adminAircraft: []
@@ -334,6 +351,303 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function buildSeatSuggestions(maxRows = 50) {
+  const seats = [];
+  for (let row = 1; row <= maxRows; row += 1) {
+    for (const letter of ["A", "B", "C", "D", "E", "F"]) {
+      seats.push(`${row}${letter}`);
+    }
+  }
+  return seats;
+}
+
+function uniqueStrings(values = []) {
+  return [...new Set(values.map((v) => String(v || "").trim()).filter(Boolean))];
+}
+
+function selectOptionsHtml(values = []) {
+  return uniqueStrings(values)
+    .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`)
+    .join("");
+}
+
+function updateSelect(id, values, placeholder = "Select one") {
+  const selectEl = document.getElementById(id);
+  if (!selectEl) return;
+  const current = String(selectEl.value || "");
+  const options = uniqueStrings(values);
+  selectEl.innerHTML = `
+    <option value="">${escapeHtml(placeholder)}</option>
+    ${selectOptionsHtml(options)}
+  `;
+  if (current && options.includes(current)) {
+    selectEl.value = current;
+  }
+}
+
+function getFlightDateValue(flight) {
+  const raw = String(flight?.depart_time || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? "" : formatDateOnly(parsed);
+}
+
+function passengerSearchFlights() {
+  const pool = state.passengerFlightCatalog.length ? state.passengerFlightCatalog : state.passengerResults;
+  return pool.filter((f) => f && f.origin && f.destination);
+}
+
+function knownAirports() {
+  return uniqueStrings([
+    ...AIRPORT_CODES,
+    ...state.passengerFlightCatalog.map((f) => f.origin),
+    ...state.passengerFlightCatalog.map((f) => f.destination),
+    ...state.passengerResults.map((f) => f.origin),
+    ...state.passengerResults.map((f) => f.destination),
+    ...state.crewSchedule.map((f) => f.origin),
+    ...state.crewSchedule.map((f) => f.destination),
+    ...state.adminFlights.map((f) => f.origin),
+    ...state.adminFlights.map((f) => f.destination)
+  ]);
+}
+
+function knownFlightNumbers() {
+  const known = uniqueStrings([
+    ...state.passengerFlightCatalog.map((f) => f.flight_num),
+    ...state.passengerResults.map((f) => f.flight_num),
+    ...state.passengerTickets.map((t) => t.flight_num),
+    ...state.crewSchedule.map((f) => f.flight_num),
+    ...state.adminFlights.map((f) => f.flight_num)
+  ]);
+  if (known.length) return known;
+  return Array.from({ length: 50 }, (_unused, i) => `F${String(i + 1).padStart(5, "0")}`);
+}
+
+function knownTailNumbers() {
+  const known = uniqueStrings([
+    ...state.passengerFlightCatalog.map((f) => f.tail_number),
+    ...state.passengerResults.map((f) => f.tail_number),
+    ...state.crewSchedule.map((f) => f.tail_number),
+    ...state.adminFlights.map((f) => f.tail_number),
+    ...state.adminAircraft.map((a) => pick(a, ["tail_number", "tailNumber"]))
+  ]);
+  if (known.length) return known;
+  return Array.from({ length: 30 }, (_unused, i) => `TN${String(i + 1).padStart(4, "0")}`);
+}
+
+function knownTicketNumbers() {
+  const known = uniqueStrings([
+    ...state.passengerTickets.map((t) => t.ticket_num),
+    ...state.agentRecentTickets
+  ]);
+  if (known.length) return known;
+  return Array.from({ length: 30 }, (_unused, i) => `T${String(i + 1).padStart(6, "0")}`);
+}
+
+function knownPassengerQueries() {
+  const fromSearch = uniqueStrings(
+    state.agentPassengers.flatMap((p) => {
+      const fullName = `${p.first_name || ""} ${p.last_name || ""}`.trim();
+      return [p.ssn, p.email, p.passport_num, fullName];
+    })
+  );
+  return uniqueStrings([...fromSearch, ...PASSENGER_QUERY_FALLBACK]);
+}
+
+function refreshPassengerSearchFilters() {
+  const originEl = document.getElementById("passenger-origin");
+  const destinationEl = document.getElementById("passenger-destination");
+  const dateEl = document.getElementById("passenger-date");
+  if (!originEl || !destinationEl || !dateEl) return;
+
+  const flights = passengerSearchFlights();
+  if (!flights.length) {
+    updateSelect("passenger-origin", knownAirports(), "Any origin");
+    updateSelect("passenger-destination", knownAirports(), "Any destination");
+    updateSelect("passenger-date", buildDateOptions(14), "Any date");
+    return;
+  }
+
+  for (let i = 0; i < 3; i += 1) {
+    const selectedOrigin = String(originEl.value || "");
+    const selectedDestination = String(destinationEl.value || "");
+    const selectedDate = String(dateEl.value || "");
+    const before = `${selectedOrigin}|${selectedDestination}|${selectedDate}`;
+
+    const originValues = flights
+      .filter((f) => (!selectedDestination || f.destination === selectedDestination) && (!selectedDate || getFlightDateValue(f) === selectedDate))
+      .map((f) => f.origin);
+
+    const destinationValues = flights
+      .filter((f) => (!selectedOrigin || f.origin === selectedOrigin) && (!selectedDate || getFlightDateValue(f) === selectedDate))
+      .map((f) => f.destination);
+
+    const dateValues = flights
+      .filter((f) => (!selectedOrigin || f.origin === selectedOrigin) && (!selectedDestination || f.destination === selectedDestination))
+      .map((f) => getFlightDateValue(f))
+      .filter(Boolean)
+      .sort();
+
+    updateSelect("passenger-origin", originValues, "Any origin");
+    updateSelect("passenger-destination", destinationValues, "Any destination");
+    updateSelect("passenger-date", dateValues, "Any date");
+
+    const after = `${originEl.value || ""}|${destinationEl.value || ""}|${dateEl.value || ""}`;
+    if (before === after) break;
+  }
+}
+
+function onPassengerSearchFilterChange() {
+  refreshPassengerSearchFilters();
+}
+
+async function loadPassengerFlightCatalog() {
+  try {
+    const auth = getAuth();
+    const url = buildUrl(ENDPOINTS.searchFlights);
+    const headers = { Accept: "application/json" };
+    if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+
+    const response = await fetch(url, { method: "GET", headers });
+    if (!response.ok) return;
+    const text = await response.text();
+    let payload = [];
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = [];
+      }
+    }
+    state.passengerFlightCatalog = toArray(payload).map(normalizeFlight);
+    refreshPassengerSearchFilters();
+    refreshAutocompleteLists();
+  } catch {
+    // Keep existing in-memory options if catalog fetch fails.
+  }
+}
+
+function refreshAutocompleteLists() {
+  refreshPassengerSearchFilters();
+  const preferredFlights = state.passengerResults.length
+    ? uniqueStrings(state.passengerResults.map((f) => f.flight_num))
+    : knownFlightNumbers();
+  updateSelect("passenger-book-flight", preferredFlights, "Select flight");
+  updateSelect("passenger-book-seat", SEAT_SUGGESTIONS, "Select seat");
+  updateSelect("passenger-cancel-ticket", knownTicketNumbers(), "Select ticket");
+
+  updateSelect("agent-lookup-q", knownPassengerQueries(), "Select lookup query");
+  updateSelect("agent-book-passenger", knownPassengerQueries(), "Select passenger");
+  updateSelect("agent-book-flight", knownFlightNumbers(), "Select flight");
+  updateSelect("agent-book-seat", SEAT_SUGGESTIONS, "Select seat");
+  updateSelect("agent-refund-ticket", knownTicketNumbers(), "Select ticket");
+
+  updateSelect("crew-status-flight", knownFlightNumbers(), "Select flight");
+  updateSelect("crew-incident-tail", knownTailNumbers(), "Select tail_number");
+  updateSelect("crew-incident-description", INCIDENT_DESCRIPTIONS, "Select description");
+
+  updateSelect("admin-create-flight-num", suggestedNewFlightNumbers(), "Select flight_num");
+  updateSelect("admin-create-tail", knownTailNumbers(), "Select tail_number");
+  updateSelect("admin-create-origin", knownAirports(), "Select origin");
+  updateSelect("admin-create-destination", knownAirports(), "Select destination");
+  updateSelect("admin-create-depart", buildDateTimeOptions(14), "Select depart_time");
+  updateSelect("admin-create-arrival", buildDateTimeOptions(14), "Select arrival_time");
+  updateSelect("admin-create-gate", GATE_OPTIONS, "Select gate");
+  updateSelect("admin-create-terminal", TERMINAL_OPTIONS, "Select terminal");
+}
+
+function normalizeDateTimeInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace("T", " ");
+  return normalized.length === 16 ? `${normalized}:00` : normalized;
+}
+
+function formatDateOnly(date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateTime(date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:00`;
+}
+
+function buildDateOptions(daysAhead = 14) {
+  const base = new Date();
+  const out = [];
+  for (let i = 0; i <= daysAhead; i += 1) {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    out.push(formatDateOnly(d));
+  }
+  return out;
+}
+
+function buildDateTimeOptions(daysAhead = 14) {
+  const base = new Date();
+  base.setMinutes(0, 0, 0);
+  const out = [];
+  for (let i = 0; i <= daysAhead; i += 1) {
+    for (let h = 0; h < 24; h += 1) {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      d.setHours(h, 0, 0, 0);
+      out.push(formatDateTime(d));
+    }
+  }
+  return out;
+}
+
+function suggestedNewFlightNumbers(count = 80) {
+  const known = knownFlightNumbers();
+  const maxNum = known.reduce((max, code) => {
+    const n = Number(String(code).replace(/[^0-9]/g, ""));
+    return Number.isFinite(n) ? Math.max(max, n) : max;
+  }, 0);
+  const start = Math.max(maxNum + 1, 1);
+  const generated = Array.from({ length: count }, (_unused, i) =>
+    `F${String(start + i).padStart(5, "0")}`
+  );
+  return uniqueStrings([...generated, ...known]);
+}
+
+function buildPassengerQueryFallback(count = 180) {
+  const out = [
+    "Smith",
+    "Johnson",
+    "Williams",
+    "Brown",
+    "Jones",
+    "Garcia",
+    "Miller",
+    "Davis",
+    "Wilson",
+    "Moore"
+  ];
+
+  for (let n = 1; n <= count; n += 1) {
+    const ssnA = `${String(n).padStart(3, "0")}-${String((n * 17) % 100).padStart(2, "0")}-${String(
+      1000 + n
+    ).padStart(4, "0")}`;
+    const ssnB = `${String(900 + (n % 100)).padStart(3, "0")}-${String((n * 17) % 100).padStart(
+      2,
+      "0"
+    )}-${String(4000 + n).padStart(4, "0")}`;
+    out.push(ssnA, ssnB);
+    out.push(`P${String(1000000 + n).padStart(7, "0")}`);
+    out.push(`P${String(9000000 + n).padStart(7, "0")}`);
+  }
+  return uniqueStrings(out);
+}
+
 // Tries both query styles so this works with slightly different backends.
 async function searchFlightsWithFallback(origin, destination, date) {
   const firstQuery = { origin, destination, date };
@@ -371,7 +685,7 @@ function renderLoginPage() {
     <section class="card">
       <h2>Login</h2>
       <form id="login-form" class="stack">
-        <label>Username <input name="username" required></label>
+        <label>Username <input name="username" required autocomplete="off"></label>
         <label>Password <input name="password" type="password" required></label>
         <button type="submit">Login</button>
       </form>
@@ -415,34 +729,78 @@ function renderLoginPage() {
 function renderPassengerPage() {
   appEl.innerHTML = `
     <section class="card">
-      <h2>Passenger</h2>
-      <form id="passenger-search-form" class="grid-2">
-        <label>Origin <input name="origin" placeholder="MSY"></label>
-        <label>Destination <input name="destination" placeholder="ATL"></label>
-        <label>Date (optional) <input name="date" type="date"></label>
-        <div class="actions"><button type="submit">Search Flights</button></div>
-      </form>
-      <div id="passenger-results"></div>
+      <h2>Passenger Workspace</h2>
+      <p class="muted">Search flights first, then book from the form below.</p>
     </section>
+    <div class="page-grid">
+      <section class="card">
+        <h3>1) Search Flights</h3>
+        <form id="passenger-search-form" class="grid-2">
+          <label>Origin <select id="passenger-origin" name="origin"></select></label>
+          <label>Destination <select id="passenger-destination" name="destination"></select></label>
+          <label>Date (optional) <select id="passenger-date" name="date"></select></label>
+          <div class="actions"><button type="submit">Search Flights</button></div>
+        </form>
+        <div id="passenger-results"></div>
+      </section>
+
+      <section class="card">
+        <h3>2) Book Ticket</h3>
+        <form id="passenger-book-form" class="grid-2">
+          <label>flight_num <select id="passenger-book-flight" name="flight_num" required></select></label>
+          <label>seat_num <select id="passenger-book-seat" name="seat_num" required></select></label>
+          <label>
+            class
+            <select name="class" required>
+              <option value="">Choose class</option>
+              ${selectOptionsHtml(CABIN_CLASSES)}
+            </select>
+          </label>
+          <div class="actions"><button type="submit">Book Ticket</button></div>
+        </form>
+        <p class="muted">Tip: click "Use" from search results to auto-fill flight number.</p>
+      </section>
+    </div>
 
     <section class="card">
-      <div class="actions">
-        <h3>My Tickets</h3>
+      <div class="actions heading-row">
+        <h3>3) My Tickets</h3>
         <button type="button" class="secondary" id="load-my-tickets">Refresh</button>
       </div>
+      <form id="passenger-cancel-form" class="actions inline-form">
+        <select id="passenger-cancel-ticket" name="ticket_num" required></select>
+        <button type="submit" class="secondary">Cancel Selected Ticket</button>
+      </form>
       <div id="my-tickets-table"></div>
     </section>
     ${debugPanelHtml()}
   `;
   refreshDebugPanel();
+  refreshAutocompleteLists();
 
   document
     .getElementById("passenger-search-form")
     .addEventListener("submit", onPassengerSearch);
   document
+    .getElementById("passenger-origin")
+    .addEventListener("change", onPassengerSearchFilterChange);
+  document
+    .getElementById("passenger-destination")
+    .addEventListener("change", onPassengerSearchFilterChange);
+  document
+    .getElementById("passenger-date")
+    .addEventListener("change", onPassengerSearchFilterChange);
+  document
+    .getElementById("passenger-book-form")
+    .addEventListener("submit", onPassengerBookTicket);
+  document
     .getElementById("load-my-tickets")
     .addEventListener("click", loadPassengerTickets);
+  document
+    .getElementById("passenger-cancel-form")
+    .addEventListener("submit", onPassengerCancelTicket);
 
+  loadPassengerFlightCatalog();
   loadPassengerTickets();
 }
 
@@ -456,8 +814,48 @@ async function onPassengerSearch(event) {
   try {
     const payload = await searchFlightsWithFallback(origin, destination, date);
     state.passengerResults = toArray(payload).map(normalizeFlight);
+    refreshAutocompleteLists();
     renderPassengerResults();
     setStatus(`Found ${state.passengerResults.length} flights.`, "success");
+  } catch {
+    // Error already shown.
+  }
+}
+
+async function onPassengerBookTicket(event) {
+  event.preventDefault();
+  const fd = new FormData(event.currentTarget);
+  const flightNum = String(fd.get("flight_num") || "").trim();
+  const seatNum = String(fd.get("seat_num") || "").trim();
+  const ticketClass = String(fd.get("class") || "").trim();
+  if (!flightNum || !seatNum || !ticketClass) return;
+
+  try {
+    await apiRequest("POST", ENDPOINTS.passengerTickets, {
+      body: {
+        flight_num: flightNum,
+        seat_num: seatNum,
+        class: ticketClass
+      }
+    });
+    setStatus("Ticket booked.", "success");
+    event.currentTarget.reset();
+    loadPassengerTickets();
+  } catch {
+    // Error already shown.
+  }
+}
+
+async function onPassengerCancelTicket(event) {
+  event.preventDefault();
+  const ticketNum = String(new FormData(event.currentTarget).get("ticket_num") || "").trim();
+  if (!ticketNum) return;
+
+  try {
+    await apiRequest("POST", ENDPOINTS.cancelTicket(ticketNum));
+    setStatus(`Ticket ${ticketNum} cancelled.`, "success");
+    event.currentTarget.reset();
+    loadPassengerTickets();
   } catch {
     // Error already shown.
   }
@@ -484,7 +882,7 @@ function renderPassengerResults() {
           <th>status</th>
           <th>gate</th>
           <th>terminal</th>
-          <th>Action</th>
+          <th>Pick</th>
         </tr>
       </thead>
       <tbody>
@@ -500,7 +898,7 @@ function renderPassengerResults() {
             <td>${escapeHtml(f.status)}</td>
             <td>${escapeHtml(f.gate)}</td>
             <td>${escapeHtml(f.terminal)}</td>
-            <td><button data-book-flight="${escapeHtml(f.flight_num)}">Book</button></td>
+            <td><button type="button" class="secondary" data-use-flight="${escapeHtml(f.flight_num)}">Use</button></td>
           </tr>
         `
           )
@@ -509,27 +907,17 @@ function renderPassengerResults() {
     </table>
   `;
 
-  host.querySelectorAll("button[data-book-flight]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const flightNum = btn.dataset.bookFlight;
-      const seatNum = prompt("seat_num?");
-      if (!seatNum) return;
-      const ticketClass = prompt("class? (Economy/Business/etc)");
-      if (!ticketClass) return;
-
-      try {
-        await apiRequest("POST", ENDPOINTS.passengerTickets, {
-          body: {
-            flight_num: flightNum,
-            seat_num: seatNum,
-            class: ticketClass
-          }
-        });
-        setStatus("Ticket booked.", "success");
-        loadPassengerTickets();
-      } catch {
-        // Error already shown.
+  host.querySelectorAll("button[data-use-flight]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const flightNum = btn.dataset.useFlight || "";
+      const bookForm = document.getElementById("passenger-book-form");
+      if (!bookForm) return;
+      const flightInput = bookForm.querySelector('select[name="flight_num"]');
+      if (flightInput) {
+        flightInput.value = flightNum;
+        flightInput.focus();
       }
+      setStatus(`Selected flight ${flightNum} for booking.`, "info");
     });
   });
 }
@@ -543,6 +931,7 @@ async function loadPassengerTickets() {
   } catch {
     state.passengerTickets = [];
   }
+  refreshAutocompleteLists();
 
   if (!state.passengerTickets.length) {
     host.innerHTML = "<p>No tickets.</p>";
@@ -600,30 +989,45 @@ async function loadPassengerTickets() {
 function renderAgentPage() {
   appEl.innerHTML = `
     <section class="card">
-      <h2>Agent</h2>
-      <form id="agent-lookup-form" class="actions">
-        <input name="q" placeholder="Passenger lookup query (name/ssn/email)" required>
-        <button type="submit">Lookup</button>
-      </form>
-      <div id="agent-passenger-table"></div>
-    </section>
+      <h2>Agent Workspace</h2>
+      <div class="page-grid">
+        <section class="card slim-card">
+          <h3>1) Passenger Lookup</h3>
+          <form id="agent-lookup-form" class="actions">
+            <select id="agent-lookup-q" name="q" required></select>
+            <button type="submit">Lookup</button>
+          </form>
+          <div id="agent-passenger-table"></div>
+        </section>
 
-    <section class="card">
-      <h3>Book for Passenger</h3>
-      <form id="agent-book-form" class="grid-2">
-        <label>passenger_query <input name="passenger_query" required></label>
-        <label>flight_num <input name="flight_num" required></label>
-        <div class="actions"><button type="submit">Book</button></div>
-      </form>
-    </section>
+        <section class="card slim-card">
+          <h3>2) Book for Passenger</h3>
+          <form id="agent-book-form" class="grid-2">
+            <label>passenger_query <select id="agent-book-passenger" name="passenger_query" required></select></label>
+            <label>flight_num <select id="agent-book-flight" name="flight_num" required></select></label>
+            <label>seat_num <select id="agent-book-seat" name="seat_num" required></select></label>
+            <label>
+              class
+              <select name="class" required>
+                <option value="">Choose class</option>
+                ${selectOptionsHtml(CABIN_CLASSES)}
+              </select>
+            </label>
+            <div class="actions"><button type="submit">Book Ticket</button></div>
+          </form>
 
-    <section class="card">
-      <h3>Refund</h3>
-      <button id="agent-refund-btn" type="button">Refund by ticket_num</button>
+          <h3>3) Refund Ticket</h3>
+          <form id="agent-refund-form" class="actions inline-form">
+            <select id="agent-refund-ticket" name="ticket_num" required></select>
+            <button type="submit" class="secondary">Refund</button>
+          </form>
+        </section>
+      </div>
     </section>
     ${debugPanelHtml()}
   `;
   refreshDebugPanel();
+  refreshAutocompleteLists();
 
   document
     .getElementById("agent-lookup-form")
@@ -632,8 +1036,8 @@ function renderAgentPage() {
     .getElementById("agent-book-form")
     .addEventListener("submit", onAgentBook);
   document
-    .getElementById("agent-refund-btn")
-    .addEventListener("click", onAgentRefund);
+    .getElementById("agent-refund-form")
+    .addEventListener("submit", onAgentRefund);
 }
 
 async function onAgentLookup(event) {
@@ -646,6 +1050,7 @@ async function onAgentLookup(event) {
       query: { q }
     });
     state.agentPassengers = toArray(payload).map(normalizePassenger);
+    refreshAutocompleteLists();
     renderAgentPassengerTable();
     setStatus(`Found ${state.agentPassengers.length} passengers.`, "success");
   } catch {
@@ -672,6 +1077,7 @@ function renderAgentPassengerTable() {
           <th>passport_num</th>
           <th>email</th>
           <th>phone</th>
+          <th>Pick</th>
         </tr>
       </thead>
       <tbody>
@@ -685,6 +1091,7 @@ function renderAgentPassengerTable() {
             <td>${escapeHtml(p.passport_num)}</td>
             <td>${escapeHtml(p.email)}</td>
             <td>${escapeHtml(p.phone)}</td>
+            <td><button type="button" class="secondary" data-use-passenger="${escapeHtml(p.ssn || p.email || `${p.first_name} ${p.last_name}`.trim())}">Use</button></td>
           </tr>
         `
           )
@@ -692,6 +1099,20 @@ function renderAgentPassengerTable() {
       </tbody>
     </table>
   `;
+
+  host.querySelectorAll("button[data-use-passenger]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const value = btn.dataset.usePassenger || "";
+      const form = document.getElementById("agent-book-form");
+      if (!form) return;
+      const input = form.querySelector('select[name="passenger_query"]');
+      if (input) {
+        input.value = value;
+        input.focus();
+      }
+      setStatus(`Selected passenger query "${value}".`, "info");
+    });
+  });
 }
 
 async function onAgentBook(event) {
@@ -699,15 +1120,12 @@ async function onAgentBook(event) {
   const fd = new FormData(event.currentTarget);
   const passengerQuery = String(fd.get("passenger_query") || "").trim();
   const flightNum = String(fd.get("flight_num") || "").trim();
-  if (!passengerQuery || !flightNum) return;
-
-  const seatNum = prompt("seat_num?");
-  if (!seatNum) return;
-  const ticketClass = prompt("class?");
-  if (!ticketClass) return;
+  const seatNum = String(fd.get("seat_num") || "").trim();
+  const ticketClass = String(fd.get("class") || "").trim();
+  if (!passengerQuery || !flightNum || !seatNum || !ticketClass) return;
 
   try {
-    await apiRequest("POST", ENDPOINTS.agentTickets, {
+    const payload = await apiRequest("POST", ENDPOINTS.agentTickets, {
       body: {
         passenger_query: passengerQuery,
         flight_num: flightNum,
@@ -715,6 +1133,11 @@ async function onAgentBook(event) {
         class: ticketClass
       }
     });
+    const ticketNum = payload?.ticket_num || payload?.data?.ticket_num || "";
+    if (ticketNum) {
+      state.agentRecentTickets = uniqueStrings([...state.agentRecentTickets, ticketNum]);
+      refreshAutocompleteLists();
+    }
     setStatus("Agent booking created.", "success");
     event.currentTarget.reset();
   } catch {
@@ -722,12 +1145,16 @@ async function onAgentBook(event) {
   }
 }
 
-async function onAgentRefund() {
-  const ticketNum = prompt("ticket_num to refund?");
+async function onAgentRefund(event) {
+  event.preventDefault();
+  const ticketNum = String(new FormData(event.currentTarget).get("ticket_num") || "").trim();
   if (!ticketNum) return;
   try {
     await apiRequest("POST", ENDPOINTS.agentRefund(ticketNum));
+    state.agentRecentTickets = uniqueStrings([...state.agentRecentTickets, ticketNum]);
+    refreshAutocompleteLists();
     setStatus(`Refund requested for ${ticketNum}.`, "success");
+    event.currentTarget.reset();
   } catch {
     // Error already shown.
   }
@@ -737,26 +1164,48 @@ async function onAgentRefund() {
 function renderCrewPage() {
   appEl.innerHTML = `
     <section class="card">
-      <h2>Crew</h2>
-      <button id="crew-load-schedule" type="button">Load Schedule</button>
-      <div id="crew-schedule-table"></div>
-    </section>
+      <h2>Crew Workspace</h2>
+      <div class="page-grid">
+        <section class="card slim-card">
+          <h3>1) Schedule</h3>
+          <div class="actions">
+            <button id="crew-load-schedule" type="button">Load Schedule</button>
+          </div>
+          <form id="crew-status-form" class="grid-2">
+            <label>flight_num <select id="crew-status-flight" name="flight_num" required></select></label>
+            <label>
+              status
+              <select name="status" required>
+                <option value="">Choose status</option>
+                ${selectOptionsHtml(FLIGHT_STATUSES)}
+              </select>
+            </label>
+            <div class="actions"><button type="submit">Update Status</button></div>
+          </form>
+          <div id="crew-schedule-table"></div>
+        </section>
 
-    <section class="card">
-      <h3>Report Incident</h3>
-      <form id="crew-incident-form" class="stack">
-        <label>tail_number <input name="tail_number" required></label>
-        <label>description <textarea name="description" rows="3" required></textarea></label>
-        <button type="submit">Submit Incident</button>
-      </form>
+        <section class="card slim-card">
+          <h3>2) Report Incident</h3>
+          <form id="crew-incident-form" class="stack">
+            <label>tail_number <select id="crew-incident-tail" name="tail_number" required></select></label>
+            <label>description <select id="crew-incident-description" name="description" required></select></label>
+            <button type="submit">Submit Incident</button>
+          </form>
+        </section>
+      </div>
     </section>
     ${debugPanelHtml()}
   `;
   refreshDebugPanel();
+  refreshAutocompleteLists();
 
   document
     .getElementById("crew-load-schedule")
     .addEventListener("click", loadCrewSchedule);
+  document
+    .getElementById("crew-status-form")
+    .addEventListener("submit", onCrewStatusUpdate);
   document
     .getElementById("crew-incident-form")
     .addEventListener("submit", onCrewIncidentSubmit);
@@ -771,6 +1220,7 @@ async function loadCrewSchedule() {
   } catch {
     state.crewSchedule = [];
   }
+  refreshAutocompleteLists();
 
   if (!state.crewSchedule.length) {
     host.innerHTML = "<p>No schedule records.</p>";
@@ -787,7 +1237,7 @@ async function loadCrewSchedule() {
           <th>origin</th>
           <th>destination</th>
           <th>status</th>
-          <th>Action</th>
+          <th>Pick</th>
         </tr>
       </thead>
       <tbody>
@@ -801,7 +1251,7 @@ async function loadCrewSchedule() {
             <td>${escapeHtml(f.origin)}</td>
             <td>${escapeHtml(f.destination)}</td>
             <td>${escapeHtml(f.status)}</td>
-            <td><button data-update-flight="${escapeHtml(f.flight_num)}">Update Status</button></td>
+            <td><button type="button" class="secondary" data-use-flight="${escapeHtml(f.flight_num)}">Use</button></td>
           </tr>
         `
           )
@@ -810,22 +1260,37 @@ async function loadCrewSchedule() {
     </table>
   `;
 
-  host.querySelectorAll("button[data-update-flight]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const flightNum = btn.dataset.updateFlight;
-      const status = prompt("New status?");
-      if (!status) return;
-      try {
-        await apiRequest("POST", ENDPOINTS.crewFlightStatus(flightNum), {
-          body: { status }
-        });
-        setStatus(`Updated ${flightNum} to ${status}.`, "success");
-        loadCrewSchedule();
-      } catch {
-        // Error already shown.
+  host.querySelectorAll("button[data-use-flight]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const flightNum = btn.dataset.useFlight || "";
+      const form = document.getElementById("crew-status-form");
+      if (!form) return;
+      const input = form.querySelector('select[name="flight_num"]');
+      if (input) {
+        input.value = flightNum;
+        input.focus();
       }
+      setStatus(`Selected flight ${flightNum} for status update.`, "info");
     });
   });
+}
+
+async function onCrewStatusUpdate(event) {
+  event.preventDefault();
+  const fd = new FormData(event.currentTarget);
+  const flightNum = String(fd.get("flight_num") || "").trim();
+  const status = String(fd.get("status") || "").trim();
+  if (!flightNum || !status) return;
+
+  try {
+    await apiRequest("POST", ENDPOINTS.crewFlightStatus(flightNum), {
+      body: { status }
+    });
+    setStatus(`Updated ${flightNum} to ${status}.`, "success");
+    loadCrewSchedule();
+  } catch {
+    // Error already shown.
+  }
 }
 
 async function onCrewIncidentSubmit(event) {
@@ -853,33 +1318,60 @@ async function onCrewIncidentSubmit(event) {
 function renderAdminPage() {
   appEl.innerHTML = `
     <section class="card">
-      <h2>Admin</h2>
-      <div class="actions">
-        <button id="admin-load-flights" type="button">Load Flights</button>
-        <button id="admin-create-flight" type="button">Create Flight</button>
-      </div>
-      <div id="admin-flights-table"></div>
-    </section>
+      <h2>Admin Workspace</h2>
+      <div class="page-grid">
+        <section class="card slim-card">
+          <h3>1) Create Flight</h3>
+          <form id="admin-create-flight-form" class="grid-2">
+            <label>flight_num <select id="admin-create-flight-num" name="flight_num" required></select></label>
+            <label>tail_number <select id="admin-create-tail" name="tail_number" required></select></label>
+            <label>origin <select id="admin-create-origin" name="origin" required></select></label>
+            <label>destination <select id="admin-create-destination" name="destination" required></select></label>
+            <label>depart_time <select id="admin-create-depart" name="depart_time" required></select></label>
+            <label>arrival_time <select id="admin-create-arrival" name="arrival_time" required></select></label>
+            <label>
+              status
+              <select name="status">
+                <option value="SCHEDULED">SCHEDULED</option>
+                ${selectOptionsHtml(FLIGHT_STATUSES.filter((s) => s !== "SCHEDULED"))}
+              </select>
+            </label>
+            <label>gate <select id="admin-create-gate" name="gate"></select></label>
+            <label>terminal <select id="admin-create-terminal" name="terminal"></select></label>
+            <div class="actions"><button type="submit">Create Flight</button></div>
+          </form>
+        </section>
 
-    <section class="card">
-      <div class="actions">
-        <button id="admin-load-aircraft" type="button">Load Aircraft</button>
+        <section class="card slim-card">
+          <h3>2) Review Data</h3>
+          <div class="actions">
+            <button id="admin-load-flights" type="button">Load Flights</button>
+            <button id="admin-load-aircraft" type="button" class="secondary">Load Aircraft</button>
+          </div>
+          <h4>Flights</h4>
+          <div id="admin-flights-table"></div>
+          <h4>Aircraft</h4>
+          <div id="admin-aircraft-table"></div>
+        </section>
       </div>
-      <div id="admin-aircraft-table"></div>
     </section>
     ${debugPanelHtml()}
   `;
   refreshDebugPanel();
+  refreshAutocompleteLists();
 
   document
     .getElementById("admin-load-flights")
     .addEventListener("click", loadAdminFlights);
   document
-    .getElementById("admin-create-flight")
-    .addEventListener("click", onAdminCreateFlight);
-  document
     .getElementById("admin-load-aircraft")
     .addEventListener("click", loadAdminAircraft);
+  document
+    .getElementById("admin-create-flight-form")
+    .addEventListener("submit", onAdminCreateFlight);
+
+  loadAdminAircraft();
+  loadAdminFlights();
 }
 
 async function loadAdminFlights() {
@@ -892,6 +1384,7 @@ async function loadAdminFlights() {
   } catch {
     state.adminFlights = [];
   }
+  refreshAutocompleteLists();
 
   if (!state.adminFlights.length) {
     host.innerHTML = "<p>No flights.</p>";
@@ -936,22 +1429,19 @@ async function loadAdminFlights() {
   `;
 }
 
-async function onAdminCreateFlight() {
-  const flight_num = prompt("flight_num?");
-  if (!flight_num) return;
-  const depart_time = prompt("depart_time? (YYYY-MM-DD HH:MM:SS)");
-  if (!depart_time) return;
-  const arrival_time = prompt("arrival_time? (YYYY-MM-DD HH:MM:SS)");
-  if (!arrival_time) return;
-  const origin = prompt("origin?");
-  if (!origin) return;
-  const destination = prompt("destination?");
-  if (!destination) return;
-  const status = prompt("status?") || "";
-  const gate = prompt("gate?") || "";
-  const terminal = prompt("terminal?") || "";
-  const tail_number = prompt("tail_number?");
-  if (!tail_number) return;
+async function onAdminCreateFlight(event) {
+  event.preventDefault();
+  const fd = new FormData(event.currentTarget);
+  const flight_num = String(fd.get("flight_num") || "").trim();
+  const depart_time = normalizeDateTimeInput(fd.get("depart_time"));
+  const arrival_time = normalizeDateTimeInput(fd.get("arrival_time"));
+  const origin = String(fd.get("origin") || "").trim();
+  const destination = String(fd.get("destination") || "").trim();
+  const status = String(fd.get("status") || "SCHEDULED").trim() || "SCHEDULED";
+  const gate = String(fd.get("gate") || "").trim();
+  const terminal = String(fd.get("terminal") || "").trim();
+  const tail_number = String(fd.get("tail_number") || "").trim();
+  if (!flight_num || !depart_time || !arrival_time || !origin || !destination || !tail_number) return;
 
   try {
     await apiRequest("POST", ENDPOINTS.adminFlights, {
@@ -968,6 +1458,7 @@ async function onAdminCreateFlight() {
       }
     });
     setStatus("Flight created.", "success");
+    event.currentTarget.reset();
     loadAdminFlights();
   } catch {
     // Error already shown.
@@ -986,6 +1477,7 @@ async function loadAdminAircraft() {
   } catch {
     state.adminAircraft = [];
   }
+  refreshAutocompleteLists();
 
   if (!rows.length) {
     host.innerHTML = "<p>No aircraft records.</p>";
