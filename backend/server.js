@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const mysql = require("mysql2/promise");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const app = express();
@@ -10,6 +11,9 @@ const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-only-secret";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const DEFAULT_TICKET_PRICE = Number(process.env.DEFAULT_TICKET_PRICE || 199.0);
+const TICKET_ID_MAX_LENGTH = parsePositiveInt(process.env.TICKET_ID_MAX_LENGTH, 20);
+const INCIDENT_ID_MAX_LENGTH = parsePositiveInt(process.env.INCIDENT_ID_MAX_LENGTH, 20);
+const MAX_ID_GENERATION_ATTEMPTS = 5;
 
 const dbConfig = {
   user: process.env.DB_USER || "root",
@@ -197,14 +201,12 @@ app.post("/passenger/tickets", requireAuth, requireRole("passenger"), async (req
       return res.status(400).json({ message: "flight_num, seat_num, and class are required." });
     }
 
-    const ticketNum = buildTicketId();
-    await pool.query(
-      `
-        INSERT INTO ticket (ticket_num, price, seat_num, \`class\`, date_booked, status, passenger_ssn, flight_num)
-        VALUES (?, ?, ?, ?, CURDATE(), 'CONFIRMED', ?, ?)
-      `,
-      [ticketNum, DEFAULT_TICKET_PRICE, seatNum, ticketClass, passengerSsn, flightNum]
-    );
+    const ticketNum = await createTicket({
+      passengerSsn,
+      flightNum,
+      seatNum,
+      ticketClass
+    });
 
     res.status(201).json({
       ticket_num: ticketNum,
@@ -296,14 +298,12 @@ app.post("/agent/tickets", requireAuth, requireRole("agent"), async (req, res, n
       return res.status(404).json({ message: "Passenger not found." });
     }
 
-    const ticketNum = buildTicketId();
-    await pool.query(
-      `
-        INSERT INTO ticket (ticket_num, price, seat_num, \`class\`, date_booked, status, passenger_ssn, flight_num)
-        VALUES (?, ?, ?, ?, CURDATE(), 'CONFIRMED', ?, ?)
-      `,
-      [ticketNum, DEFAULT_TICKET_PRICE, seatNum, ticketClass, passengerSsn, flightNum]
-    );
+    const ticketNum = await createTicket({
+      passengerSsn,
+      flightNum,
+      seatNum,
+      ticketClass
+    });
 
     res.status(201).json({
       ticket_num: ticketNum,
@@ -484,6 +484,9 @@ app.use((err, _req, res, _next) => {
   if (err.code === "ER_DUP_ENTRY") {
     return res.status(409).json({ message: "Duplicate value violates a unique constraint." });
   }
+  if (err.code === "ER_DATA_TOO_LONG") {
+    return res.status(400).json({ message: "One or more values exceed schema length limits." });
+  }
   if (err.code === "ER_NO_REFERENCED_ROW_2") {
     return res.status(400).json({ message: "Related record does not exist." });
   }
@@ -576,6 +579,29 @@ async function findPassengerByAgentQuery(query) {
   return rows[0]?.ssn || "";
 }
 
+async function createTicket({ passengerSsn, flightNum, seatNum, ticketClass }) {
+  for (let attempt = 1; attempt <= MAX_ID_GENERATION_ATTEMPTS; attempt += 1) {
+    const ticketNum = buildTicketId();
+    try {
+      await pool.query(
+        `
+          INSERT INTO ticket (ticket_num, price, seat_num, \`class\`, date_booked, status, passenger_ssn, flight_num)
+          VALUES (?, ?, ?, ?, CURDATE(), 'CONFIRMED', ?, ?)
+        `,
+        [ticketNum, DEFAULT_TICKET_PRICE, seatNum, ticketClass, passengerSsn, flightNum]
+      );
+      return ticketNum;
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") continue;
+      throw err;
+    }
+  }
+
+  const err = new Error("Unable to generate a unique ticket ID. Please retry.");
+  err.status = 503;
+  throw err;
+}
+
 function normalizeText(value) {
   return String(value || "").trim();
 }
@@ -589,15 +615,34 @@ function normalizeClass(value) {
 }
 
 function buildTicketId() {
-  return `T${Date.now()}${Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, "0")}`;
+  return buildSchemaSafeId("T", TICKET_ID_MAX_LENGTH);
 }
 
 function buildIncidentId() {
-  return `I${Date.now()}${Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, "0")}`;
+  return buildSchemaSafeId("I", INCIDENT_ID_MAX_LENGTH);
+}
+
+function buildSchemaSafeId(prefix, maxLength) {
+  const safeMax = parsePositiveInt(maxLength, 20);
+  const cleanPrefix =
+    String(prefix || "")
+      .replace(/[^A-Za-z0-9]/g, "")
+      .toUpperCase() || "X";
+  const prefixPart = cleanPrefix.slice(0, Math.max(1, safeMax - 1));
+  const bodyLength = safeMax - prefixPart.length;
+
+  let body = Date.now().toString(36).toUpperCase();
+  if (body.length < bodyLength) {
+    const charsNeeded = bodyLength - body.length;
+    body += crypto.randomBytes(Math.ceil(charsNeeded / 2)).toString("hex").toUpperCase();
+  }
+
+  return `${prefixPart}${body.slice(0, bodyLength)}`;
+}
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isInteger(parsed) && parsed > 1 ? parsed : fallback;
 }
 
 function loadDemoUsers() {
