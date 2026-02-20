@@ -85,6 +85,55 @@ app.post("/auth/login", async (req, res) => {
   });
 });
 
+
+app.post("/auth/register", async (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+  const name = String(req.body?.name || "").trim();
+  const email = String(req.body?.email || "").trim();
+  const role = String(req.body?.role || "").trim().toLowerCase();
+
+  if (!username || !password || !name || !email || !role) {
+    return res.status(400).json({ message: "username, password, name, email, and role are required." });
+  }
+
+  if (role === "admin") {
+    return res.status(403).json({ message: "Cannot register as admin." });
+  }
+
+  if (!["passenger", "agent", "crew"].includes(role)) {
+    return res.status(400).json({ message: "Invalid role. Must be passenger, agent, or crew." });
+  }
+
+  if (DEMO_USERS[username]) {
+    return res.status(409).json({ message: "Username already exists." });
+  }
+
+  const newUser = {
+    password,
+    role,
+    name,
+    email
+  };
+
+  if (role === "passenger") {
+    newUser.ssn = "";
+  } else {
+    newUser.employee_id = "";
+  }
+
+  DEMO_USERS[username] = newUser;
+
+  return res.status(201).json({
+    message: "Registration successful. You can now login.",
+    username,
+    role,
+    name,
+    email
+  });
+});
+
+
 app.get("/flights/search", async (req, res, next) => {
   try {
     const origin = normalizeText(req.query.origin || req.query.from);

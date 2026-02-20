@@ -4,6 +4,7 @@ const BASE_URL = "https://airline-api-79806812877.us-central1.run.app";
 // Keep all endpoint paths here
 const ENDPOINTS = {
   login: "/auth/login",
+  register: "/auth/register",
   searchFlights: "/flights/search",
   passengerTickets: "/passenger/tickets",
   cancelTicket: (ticketNum) =>
@@ -23,6 +24,7 @@ const ENDPOINTS = {
 // Supported hash routes in the SPA.
 const ROUTES = new Set([
   "#/login",
+  "#/register",
   "#/passenger",
   "#/agent",
   "#/crew",
@@ -115,7 +117,7 @@ function renderRoute() {
     return;
   }
 
-  if (route !== "#/login") {
+  if (route !== "#/login" && route !== "#/register") {
     if (!auth.token || !auth.role) {
       setStatus("Please log in first.", "error");
       location.hash = "#/login";
@@ -132,6 +134,9 @@ function renderRoute() {
   switch (route) {
     case "#/login":
       renderLoginPage();
+      break;
+    case "#/register":
+      renderRegisterPage();
       break;
     case "#/passenger":
       renderPassengerPage();
@@ -689,6 +694,7 @@ function renderLoginPage() {
         <label>Password <input name="password" type="password" required></label>
         <button type="submit">Login</button>
       </form>
+      <p class="muted">Don't have an account? <a href="#/register">Register here</a></p>
     </section>
     ${debugPanelHtml()}
   `;
@@ -719,6 +725,65 @@ function renderLoginPage() {
       });
       setStatus("Login successful.", "success");
       location.hash = ROLE_TO_ROUTE[role] || "#/login";
+    } catch {
+      // Error already handled in apiRequest.
+    }
+  });
+}
+
+// Register page.
+function renderRegisterPage() {
+  appEl.innerHTML = `
+    <section class="card">
+      <h2>Register</h2>
+      <form id="register-form" class="stack">
+        <label>Username <input name="username" required autocomplete="off"></label>
+        <label>Password <input name="password" type="password" required></label>
+        <label>Full Name <input name="name" required></label>
+        <label>Email <input name="email" type="email" required></label>
+        <label>
+          Role
+          <select name="role" required>
+            <option value="">Select a role</option>
+            <option value="passenger">Passenger</option>
+            <option value="agent">Agent</option>
+            <option value="crew">Crew</option>
+          </select>
+        </label>
+        <button type="submit">Register</button>
+      </form>
+      <p class="muted">Already have an account? <a href="#/login">Login here</a></p>
+    </section>
+    ${debugPanelHtml()}
+  `;
+  refreshDebugPanel();
+
+  document.getElementById("register-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(event.currentTarget);
+    const username = String(fd.get("username") || "").trim();
+    const password = String(fd.get("password") || "");
+    const name = String(fd.get("name") || "").trim();
+    const email = String(fd.get("email") || "").trim();
+    const role = String(fd.get("role") || "").trim().toLowerCase();
+
+    if (!username || !password || !name || !email || !role) {
+      setStatus("All fields are required.", "error");
+      return;
+    }
+
+    try {
+      const payload = await apiRequest("POST", ENDPOINTS.register, {
+        body: { username, password, name, email, role }
+      });
+
+      setStatus("Registration successful! You can now login.", "success");
+      // Clear the form
+      document.getElementById("register-form").reset();
+      // Redirect to login after success
+      setTimeout(() => {
+        location.hash = "#/login";
+      }, 1500);
     } catch {
       // Error already handled in apiRequest.
     }
