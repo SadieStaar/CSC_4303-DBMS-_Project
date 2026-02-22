@@ -9,7 +9,8 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-only-secret";
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "https://airline-frontend.web.app";
+const DEV_ALLOWED_ORIGINS = ["http://localhost:5500", "http://127.0.0.1:5500", "http://localhost:3000", "http://127.0.0.1:3000", "https://airline-frontend.web.app"];
 const DEFAULT_TICKET_PRICE = Number(process.env.DEFAULT_TICKET_PRICE || 199.0);
 const TICKET_ID_MAX_LENGTH = parsePositiveInt(process.env.TICKET_ID_MAX_LENGTH, 20);
 const INCIDENT_ID_MAX_LENGTH = parsePositiveInt(process.env.INCIDENT_ID_MAX_LENGTH, 20);
@@ -34,15 +35,25 @@ if (process.env.INSTANCE_CONNECTION_NAME) {
 const pool = mysql.createPool(dbConfig);
 
 app.use(express.json());
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (CORS_ORIGIN === "*" || !origin) return cb(null, true);
-      const allowed = CORS_ORIGIN.split(",").map((v) => v.trim());
-      return cb(null, allowed.includes(origin));
-    }
-  })
-);
+const configuredOrigins = CORS_ORIGIN.split(",").map((v) => v.trim()).filter(Boolean);
+const allowAnyOrigin = configuredOrigins.length === 0 || configuredOrigins.includes("*");
+const allowedOrigins = new Set(configuredOrigins);
+if (process.env.NODE_ENV !== "production") {
+  DEV_ALLOWED_ORIGINS.forEach((origin) => allowedOrigins.add(origin));
+}
+
+const corsOptions = {
+  origin(origin, cb) {
+    if (!origin || allowAnyOrigin || allowedOrigins.has(origin)) return cb(null, true);
+    return cb(null, false);
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 const DEMO_USERS = loadDemoUsers();
 
