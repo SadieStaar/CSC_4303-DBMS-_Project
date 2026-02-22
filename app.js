@@ -1,5 +1,8 @@
 // Change this to your group server URL.
-const BASE_URL = "https://airline-api-79806812877.us-central1.run.app";
+const BASE_URL =
+  (location.hostname === "localhost" || location.hostname === "127.0.0.1")
+    ? "http://localhost:3000"
+    : "https://airline-api-79806812877.us-central1.run.app";
 
 // Keep all endpoint paths here
 const ENDPOINTS = {
