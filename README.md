@@ -32,3 +32,7 @@ It manages airline operations such as flight scheduling, passenger reservations,
 4. Run SQL Scripts
    * Open SQL file into the editor
    * Execute commands in the console 
+
+### Launch the Website
+Launch the Website using:
+https://airline-frontend.web.app/#/login 
